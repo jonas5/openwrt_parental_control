@@ -1,0 +1,7 @@
+config global 'global'
+	option enabled '0'
+
+config profile 'default'
+	option name 'default'
+	option timetable '{}'
+	option day_hours '{}'

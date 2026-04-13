@@ -1,0 +1,13 @@
+{
+	"admin/network/parental_control": {
+		"title": "Parental Control",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "parental_control"
+		},
+		"depends": {
+			"acl": [ "luci-base", "luci-app-parental-control" ]
+		}
+	}
+}

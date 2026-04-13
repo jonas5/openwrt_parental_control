@@ -1,0 +1,255 @@
+<%+header%>
+<link rel="stylesheet" href="/luci-static/resources/parental-control/style.css">
+
+<div class="cbi-map">
+    <div class="profile-section">
+        <label for="profile-selector">Profile:</label>
+        <select id="profile-selector"></select>
+        <input type="text" id="new-profile-name" placeholder="New profile name">
+        <button id="add-profile-button">Add Profile</button>
+    </div>
+
+    <div id="timetable-container"></div>
+
+    <div class="devices-section">
+        <h4>Assigned Devices</h4>
+        <div id="devices-list"></div>
+        <label for="device-select">Add Device:</label>
+        <select id="device-select"></select>
+        <button id="add-device-button">Add Device</button>
+    </div>
+
+    <button id="save-button">Save Changes</button>
+</div>
+
+<script>
+// Parental Control UI Logic
+(function() {
+    var container = document.getElementById('timetable-container');
+    var days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    var SLOTS_PER_HOUR = 4;
+    var TOTAL_SLOTS = 24 * SLOTS_PER_HOUR;
+    var currentProfile = 'default';
+    var profilesData = {};
+
+    // Create time headers
+    var timeHeader = '<div class="day-header"></div>';
+    for (var i = 0; i < 24; i++) {
+        timeHeader += '<div class="time-header">' + i + ':00</div>';
+    }
+    container.innerHTML += timeHeader;
+
+    // Create timetable grid
+    for (var d = 0; d < days.length; d++) {
+        var day = days[d];
+        var dayHeader = '<div class="day-header">' + day.toUpperCase() + '</div>';
+        container.innerHTML += dayHeader;
+        for (var s = 0; s < TOTAL_SLOTS; s++) {
+            container.innerHTML += '<div class="time-slot" data-day="' + day + '" data-slot="' + s + '"></div>';
+        }
+    }
+
+    // UI Elements
+    var profileSelector = document.getElementById('profile-selector');
+    var newProfileInput = document.getElementById('new-profile-name');
+    var addProfileButton = document.getElementById('add-profile-button');
+    var saveButton = document.getElementById('save-button');
+    var devicesList = document.getElementById('devices-list');
+    var deviceSelect = document.getElementById('device-select');
+    var addDeviceButton = document.getElementById('add-device-button');
+
+    // Event listeners
+    container.addEventListener('click', function(e) {
+        if (e.target.classList.contains('time-slot')) {
+            e.target.classList.toggle('allowed');
+        }
+    });
+
+    addProfileButton.addEventListener('click', function() {
+        var newProfileName = newProfileInput.value.trim();
+        if (newProfileName) {
+            createProfile(newProfileName);
+        }
+    });
+
+    profileSelector.addEventListener('change', function() {
+        currentProfile = this.value;
+        loadProfile(currentProfile);
+    });
+
+    saveButton.addEventListener('click', saveProfile);
+    addDeviceButton.addEventListener('click', addDevice);
+
+    devicesList.addEventListener('click', function(e) {
+        if (e.target.classList.contains('remove-device-button')) {
+            var mac = e.target.dataset.mac;
+            removeDevice(mac);
+        }
+    });
+
+    function loadDevices() {
+        var url = '/cgi-bin/luci/admin/network/parental_control/get_devices';
+        fetch(url)
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                deviceSelect.innerHTML = '';
+                for (var i = 0; i < data.length; i++) {
+                    var device = data[i];
+                    var option = document.createElement('option');
+                    option.value = device.mac;
+                    option.textContent = device.name + ' (' + device.mac + ')';
+                    deviceSelect.appendChild(option);
+                }
+            });
+    }
+
+    function loadProfiles() {
+        var url = '/cgi-bin/luci/admin/network/parental_control/get_profiles';
+        return fetch(url)
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                profilesData = data;
+                profileSelector.innerHTML = '';
+                var firstProfile = true;
+                for (var profileName in data) {
+                    var option = document.createElement('option');
+                    option.value = profileName;
+                    option.textContent = data[profileName].name;
+                    profileSelector.appendChild(option);
+                    if (firstProfile) {
+                        currentProfile = profileName;
+                        firstProfile = false;
+                    }
+                }
+                loadProfile(currentProfile);
+            });
+    }
+
+    function loadProfile(profileName) {
+        var profile = profilesData[profileName];
+        if (!profile) return;
+
+        var timetable = JSON.parse(profile.timetable || '{}');
+
+        // Reset all time slots
+        var slots = document.querySelectorAll('.time-slot');
+        for (var i = 0; i < slots.length; i++) {
+            slots[i].classList.remove('allowed');
+        }
+
+        // Set allowed time slots
+        for (var d = 0; d < days.length; d++) {
+            var day = days[d];
+            if (timetable[day] && timetable[day].length === TOTAL_SLOTS) {
+                for (var s = 0; s < TOTAL_SLOTS; s++) {
+                    if (timetable[day][s]) {
+                        var slot = document.querySelector('.time-slot[data-day="' + day + '"][data-slot="' + s + '"]');
+                        if (slot) {
+                            slot.classList.add('allowed');
+                        }
+                    }
+                }
+            }
+        }
+
+        // Load devices
+        devicesList.innerHTML = '';
+        var devices = (profile.devices && profile.devices.trim() !== '') ? profile.devices.split(' ') : [];
+        for (var j = 0; j < devices.length; j++) {
+            var mac = devices[j];
+            var deviceEntry = document.createElement('div');
+            deviceEntry.className = 'device-entry';
+            deviceEntry.innerHTML = '<span>' + mac + '</span><span class="remove-device-button" data-mac="' + mac + '">X</span>';
+            devicesList.appendChild(deviceEntry);
+        }
+    }
+
+    function saveProfile() {
+        var timetable = {};
+        for (var d = 0; d < days.length; d++) {
+            var day = days[d];
+            timetable[day] = [];
+            for (var s = 0; s < TOTAL_SLOTS; s++) {
+                var slot = document.querySelector('.time-slot[data-day="' + day + '"][data-slot="' + s + '"]');
+                timetable[day].push(slot.classList.contains('allowed'));
+            }
+        }
+
+        var devices = [];
+        var deviceSpans = devicesList.querySelectorAll('.device-entry span:first-child');
+        for (var i = 0; i < deviceSpans.length; i++) {
+            devices.push(deviceSpans[i].textContent);
+        }
+
+        var profileData = {
+            name: currentProfile,
+            timetable: JSON.stringify(timetable),
+            devices: devices
+        };
+
+        fetch('/cgi-bin/luci/admin/network/parental_control/set_profile', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: 'data=' + encodeURIComponent(JSON.stringify(profileData))
+        })
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.status === 'error') {
+                alert(data.message);
+            }
+        });
+    }
+
+    function createProfile(profileName) {
+        var profileData = {
+            name: profileName,
+            timetable: '{}',
+            devices: []
+        };
+
+        fetch('/cgi-bin/luci/admin/network/parental_control/set_profile', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: 'data=' + encodeURIComponent(JSON.stringify(profileData))
+        }).then(function() {
+            newProfileInput.value = '';
+            loadProfiles().then(function() {
+                profileSelector.value = profileName;
+                currentProfile = profileName;
+                loadProfile(currentProfile);
+            });
+        });
+    }
+
+    function addDevice() {
+        var newMac = deviceSelect.value;
+        var devices = [];
+        var deviceSpans = devicesList.querySelectorAll('.device-entry span:first-child');
+        for (var i = 0; i < deviceSpans.length; i++) {
+            devices.push(deviceSpans[i].textContent);
+        }
+
+        if (devices.indexOf(newMac) === -1) {
+            devices.push(newMac);
+            var deviceEntry = document.createElement('div');
+            deviceEntry.className = 'device-entry';
+            deviceEntry.innerHTML = '<span>' + newMac + '</span><span class="remove-device-button" data-mac="' + newMac + '">X</span>';
+            devicesList.appendChild(deviceEntry);
+        }
+    }
+
+    function removeDevice(mac) {
+        var btn = document.querySelector('.remove-device-button[data-mac="' + mac + '"]');
+        if (btn) btn.parentNode.remove();
+    }
+
+    // Load initial data
+    loadProfiles();
+    loadDevices();
+})();
+</script>
+<%+footer%>

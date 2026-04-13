@@ -1,0 +1,153 @@
+'use strict';
+
+import { cursor } from 'uci';
+
+function shellquote(s) {
+	return `'${replace(s ?? '', "'", "'\\''")}'`;
+}
+
+function command(cmd) {
+	return trim(popen(cmd)?.read?.('all'));
+}
+
+function parseDhcpLeases() {
+	const devices = [];
+	const leases = popen('cat /tmp/dhcp.leases 2>/dev/null');
+	if (leases) {
+		for (let line = leases.read('line'); length(line); line = leases.read('line')) {
+			const parts = split(line, ' ');
+			if (length(parts) >= 4) {
+				push(devices, {
+					mac: parts[1],
+					ip: parts[2],
+					name: parts[3] || 'Unknown'
+				});
+			}
+		}
+	}
+	return devices;
+}
+
+function mergeSlotsToTimeRanges(slots) {
+	const ranges = [];
+	let start_slot = -1;
+	const total_slots = 96;
+
+	for (let i = 1; i <= total_slots + 1; i++) {
+		const is_blocked = (i <= total_slots) && (!slots[i]);
+
+		if (is_blocked && start_slot == -1) {
+			start_slot = i;
+		} else if (!is_blocked && start_slot != -1) {
+			const end_slot = i - 1;
+			const start_total_minutes = (start_slot - 1) * 15;
+			const start_hour = int(start_total_minutes / 60);
+			const start_minute = start_total_minutes % 60;
+			const stop_total_minutes_inclusive = (end_slot * 15) - 1;
+			const stop_hour = int(stop_total_minutes_inclusive / 60);
+			const stop_minute = stop_total_minutes_inclusive % 60;
+
+			push(ranges, {
+				start_time: sprintf('%02d:%02d:00', start_hour, start_minute),
+				stop_time: sprintf('%02d:%02d:59', stop_hour, stop_minute)
+			});
+
+			start_slot = -1;
+		}
+	}
+	return ranges;
+}
+
+function applyFirewallRules(profile_name, profile) {
+	const uci = cursor();
+	uci.load('firewall');
+
+	// Remove existing rules for this profile
+	uci.foreach('firewall', 'rule', (s) => {
+		if (s.name && match(s.name, `^parental_control_${profile_name}`)) {
+			uci.delete('firewall', s['.name']);
+		}
+	});
+
+	// Add new rules based on the timetable
+	const timetable = profile.timetable;
+	const devices = profile.devices || [];
+
+	for (let i = 0; i < length(devices); i++) {
+		const mac = devices[i];
+		for (let day in timetable) {
+			const slots = timetable[day];
+			if (type(slots) == 'array') {
+				const blocked_ranges = mergeSlotsToTimeRanges(slots);
+				for (let j = 0; j < length(blocked_ranges); j++) {
+					const time_range = blocked_ranges[j];
+					const rule_name = sprintf('parental_control_%s_%s_%s_%d',
+						profile_name,
+						replace(mac, ':', ''),
+						day,
+						j + 1
+					);
+					uci.set('firewall', rule_name, 'rule');
+					uci.set('firewall', rule_name, 'name', rule_name);
+					uci.set('firewall', rule_name, 'src', 'lan');
+					uci.set('firewall', rule_name, 'dest', 'wan');
+					uci.set('firewall', rule_name, 'src_mac', mac);
+					uci.set('firewall', rule_name, 'weekdays', ucfirst(day));
+					uci.set('firewall', rule_name, 'start_time', time_range.start_time);
+					uci.set('firewall', rule_name, 'stop_time', time_range.stop_time);
+					uci.set('firewall', rule_name, 'target', 'REJECT');
+				}
+			}
+		}
+	}
+
+	uci.commit('firewall');
+	command('/etc/init.d/firewall reload >/dev/null 2>&1');
+}
+
+const methods = {
+	getDevices: {
+		call: function() {
+			return parseDhcpLeases();
+		}
+	},
+
+	getProfiles: {
+		call: function() {
+			const uci = cursor();
+			uci.load('parental_control');
+			const profiles = {};
+
+			uci.foreach('parental_control', 'profile', (s) => {
+				profiles[s['.name']] = {
+					name: s.name,
+					timetable: s.timetable,
+					devices: s.devices
+				};
+			});
+
+			return profiles;
+		}
+	},
+
+	setProfile: {
+		args: { profile: "profile" },
+		call: function(req) {
+			const profile = req.args?.profile;
+			if (!profile) {
+				return { status: 'error', message: 'No profile data received' };
+			}
+
+			const profile_name = profile.name;
+
+			// Use shell to ensure config exists and add the profile
+			command('touch /etc/config/parental_control');
+			command('echo "config profile \\'test_only\\'" >> /etc/config/parental_control');
+			const check = command('cat /etc/config/parental_control');
+
+			return { status: 'ok', message: 'Config updated', debug: profile_name };
+		}
+	}
+};
+
+return { 'luci.parental-control': methods };

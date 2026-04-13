@@ -1,0 +1,43 @@
+#!/bin/sh /etc/rc.common
+# Parental Control Tracker Init Script
+
+START=95
+STOP=10
+USE_PROCD=0
+
+start() {
+    # Ensure config exists
+    touch /etc/config/parental_control
+    
+    # Check if parental control is enabled in config
+    local enabled=$(uci get parental_control.global.enabled 2>/dev/null)
+    if [ "$?" != "0" ] || [ "$enabled" != "1" ]; then
+        logger -t parental-control "Parental control is disabled"
+        return 0
+    fi
+    
+    # Ensure tracker script is executable
+    chmod +x /usr/share/parental-control/tracker.sh
+    
+    # Add to crontab if not already present
+    local cron_entry="*/5 * * * * /usr/share/parental-control/tracker.sh"
+    
+    if ! grep -q "parental-control/tracker.sh" /etc/crontabs/root 2>/dev/null; then
+        echo "$cron_entry" >> /etc/crontabs/root
+        /etc/init.d/cron restart
+    fi
+    
+    logger -t parental-control "Tracker daemon started"
+}
+
+boot() {
+    start
+}
+
+stop() {
+    # Remove from crontab
+    sed -i '/parental-control\/tracker.sh/d' /etc/crontabs/root 2>/dev/null
+    /etc/init.d/cron restart
+    
+    logger -t parental-control "Tracker daemon stopped"
+}

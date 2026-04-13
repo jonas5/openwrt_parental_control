@@ -1,0 +1,22 @@
+{
+	"luci-app-parental-control": {
+		"description": "Grant access to Parental Control",
+		"read": {
+			"ubus": {
+				"luci.parental-control": [
+					"getDevices",
+					"getProfiles"
+				]
+			},
+			"uci": [ "parental_control", "firewall" ]
+		},
+		"write": {
+			"ubus": {
+				"luci.parental-control": [
+					"setProfile"
+				]
+			},
+			"uci": [ "parental_control", "firewall" ]
+		}
+	}
+}
